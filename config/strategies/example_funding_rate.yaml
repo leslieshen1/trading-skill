@@ -1,0 +1,48 @@
+name: "资金费率套利"
+enabled: true
+market: "futures_um"
+description: "资金费率极端时的反向开仓策略"
+
+screener:
+  min_quote_volume: 10000000
+  funding_rate_threshold: 0.1
+  quote_assets: ["USDT"]
+  only_perpetual: true
+
+entry:
+  conditions:
+    - indicator: "funding_rate"
+      operator: ">"
+      value: 0.1
+    - indicator: "rsi_14"
+      operator: ">"
+      value: 70
+  direction: "short"
+
+  alt_conditions:
+    - indicator: "funding_rate"
+      operator: "<"
+      value: -0.1
+    - indicator: "rsi_14"
+      operator: "<"
+      value: 30
+  alt_direction: "long"
+
+exit:
+  take_profit: 3.0
+  stop_loss: 1.5
+  custom_exit:
+    - indicator: "funding_rate"
+      operator: "between"
+      value: [-0.01, 0.01]
+
+position:
+  method: "fixed_percent"
+  risk_per_trade: 0.5
+  max_position_pct: 3.0
+  max_open_positions: 3
+
+ai:
+  enabled: true
+  confirm_entry: true
+  analysis_depth: "quick"

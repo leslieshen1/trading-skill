@@ -1,0 +1,43 @@
+name: "动量突破策略"
+enabled: true
+market: "futures_um"
+description: "捕捉强势币种的动量突破机会"
+
+screener:
+  min_quote_volume: 5000000
+  quote_assets: ["USDT"]
+  only_perpetual: true
+
+entry:
+  conditions:
+    - indicator: "change_24h"
+      operator: ">"
+      value: 3.0
+    - indicator: "rsi_14"
+      operator: "between"
+      value: [40, 70]
+    - indicator: "volume_ratio"
+      operator: ">"
+      value: 2.0
+    - indicator: "ema_trend"
+      operator: "=="
+      value: "above"
+  direction: "long"
+
+exit:
+  take_profit: 5.0
+  stop_loss: 2.0
+  trailing_stop: 1.5
+  max_hold_hours: 48
+
+position:
+  method: "fixed_percent"
+  risk_per_trade: 1.0
+  max_position_pct: 5.0
+  max_open_positions: 5
+
+ai:
+  enabled: true
+  confirm_entry: true
+  confirm_exit: false
+  analysis_depth: "standard"
