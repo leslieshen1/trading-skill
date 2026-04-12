@@ -238,6 +238,30 @@ class BinanceTradingClient:
         resp.raise_for_status()
         return resp.json()
 
+    async def get_open_algo_orders(self, symbol: str | None = None) -> list[dict]:
+        """Get all open algo/conditional orders."""
+        params: dict = {}
+        if symbol:
+            params["symbol"] = symbol
+        params = self._sign(params)
+        client = await self._get_client()
+        resp = await client.get(f"{self._api_prefix}/openAlgoOrders", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("orders", data) if isinstance(data, dict) else data
+
+    async def get_position_risk(self, symbol: str | None = None) -> list[dict]:
+        """Get position risk via /fapi/v3/positionRisk (accurate for hedge mode)."""
+        params: dict = {}
+        if symbol:
+            params["symbol"] = symbol
+        params = self._sign(params)
+        client = await self._get_client()
+        prefix = self._api_prefix.replace("/v1", "/v3")
+        resp = await client.get(f"{prefix}/positionRisk", params=params)
+        resp.raise_for_status()
+        return resp.json()
+
     async def cancel_order(self, symbol: str, order_id: int) -> dict:
         params = self._sign({"symbol": symbol, "orderId": order_id})
         client = await self._get_client()
