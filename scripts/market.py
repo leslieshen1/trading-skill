@@ -91,7 +91,7 @@ async def cmd_analysis(args):
         print(f"RSI(14): {ind.rsi_14:.1f}" if ind.rsi_14 else "RSI: N/A")
         print(f"MACD: {ind.macd_value:.4f}  Signal: {ind.macd_signal_value:.4f}  Hist: {ind.macd_histogram:.4f}  [{ind.macd_signal}]" if ind.macd_value else "MACD: N/A")
         print(f"EMA20: {ind.ema_20:.4f}  EMA50: {ind.ema_50:.4f}  趋势: {ind.ema_trend}" if ind.ema_20 else "EMA: N/A")
-        print(f"布林带: Upper={ind.bollinger_upper:.4f} Mid={ind.bollinger_mid:.4f} Lower={ind.bollinger_lower:.4f}  %B={ind.bollinger_pct:.2f}" if ind.bollinger_upper else "Bollinger: N/A")
+        print(f"布林带: Upper={ind.bollinger_upper:.4f} Mid={ind.bollinger_mid:.4f} Lower={ind.bollinger_lower:.4f}  %B={ind.bollinger_pct:.2f}" if (ind.bollinger_upper and ind.bollinger_mid and ind.bollinger_lower and ind.bollinger_pct is not None) else "Bollinger: N/A")
         print(f"ATR(14): {ind.atr_14:.4f}  ({ind.atr_percent:.2f}%)" if ind.atr_14 else "ATR: N/A")
         print(f"ADX(14): {ind.adx_14:.1f}" if ind.adx_14 else "ADX: N/A")
         print(f"KDJ: K={ind.stoch_k:.1f}  D={ind.stoch_d:.1f}" if ind.stoch_k else "KDJ: N/A")
