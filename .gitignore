@@ -23,5 +23,8 @@ venv/
 .coverage
 htmlcov/
 
+# Node
+node_modules/
+
 # Data
 *.log
