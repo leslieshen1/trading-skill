@@ -197,6 +197,88 @@ async def cmd_scan(args):
             if t.quote_volume_24h > 200_000_000:
                 vol_anomalies.append(t)
 
+        # 模式8: 15分钟共振做多 — 5个条件至少满足4个
+        # 筛选：涨幅-5%到+30%(未极端) + 量>$5M，并发拉15m K线和OI历史
+        resonance_candidates = [t for t in candidates
+                                if -5 < t.change_24h < 30
+                                and t.quote_volume_24h > 5_000_000]
+        resonance_alerts = []  # (ticker, score, details_dict)
+
+        import httpx
+        async def check_resonance(t):
+            try:
+                # 并发拉取 15m K线 + OI历史
+                bars_task = client.get_klines(t.symbol, interval="15m", limit=30)
+                async with httpx.AsyncClient(timeout=10.0, base_url="https://fapi.binance.com") as h:
+                    oi_task = h.get("/futures/data/openInterestHist",
+                                    params={"symbol": t.symbol, "period": "5m", "limit": 7})
+                    bars, oi_resp = await asyncio.gather(bars_task, oi_task)
+
+                if not bars or len(bars) < 25:
+                    return None
+                closes = [b.close for b in bars]
+                current_close = closes[-1]
+
+                # 条件1: MA对齐 — EMA5 > EMA20 且 价格 > EMA20
+                def ema(data, period):
+                    k = 2 / (period + 1)
+                    e = data[0]
+                    for p in data[1:]:
+                        e = p * k + e * (1 - k)
+                    return e
+                ema5 = ema(closes[-10:], 5)
+                ema20 = ema(closes[-25:], 20)
+                ma_aligned = current_close > ema20 and ema5 > ema20
+
+                # 条件2: 量能 > 20根均量 × 1.8
+                current_vol = bars[-1].volume
+                avg_vol = sum(b.volume for b in bars[-21:-1]) / 20
+                vol_surge = current_vol > avg_vol * 1.8 if avg_vol > 0 else False
+                vol_ratio = current_vol / avg_vol if avg_vol > 0 else 0
+
+                # 条件3: OI过去30分钟增长 > +3% (5m * 6bars = 30min)
+                oi_data = oi_resp.json() if oi_resp.status_code == 200 else []
+                oi_pct = 0
+                if len(oi_data) >= 7:
+                    oi_now = float(oi_data[-1]["sumOpenInterest"])
+                    oi_30min_ago = float(oi_data[0]["sumOpenInterest"])
+                    if oi_30min_ago > 0:
+                        oi_pct = (oi_now / oi_30min_ago - 1) * 100
+                oi_grow = oi_pct > 3
+
+                # 条件4: 费率在 -0.15% 到 +0.08%
+                funding_ok = -0.15 < t.funding_rate < 0.08
+
+                # 条件5: %B 在 0.6-1.0
+                mid = sum(closes[-20:]) / 20
+                std = (sum((c - mid) ** 2 for c in closes[-20:]) / 20) ** 0.5
+                upper = mid + 2 * std
+                lower = mid - 2 * std
+                pct_b = (current_close - lower) / (upper - lower) if upper > lower else 0.5
+                pct_b_ok = 0.6 <= pct_b <= 1.0
+
+                score = sum([ma_aligned, vol_surge, oi_grow, funding_ok, pct_b_ok])
+                if score >= 4:
+                    details = {
+                        'price': current_close,
+                        'ma': '✓' if ma_aligned else '✗',
+                        'vol': f"{vol_ratio:.1f}x{'✓' if vol_surge else '✗'}",
+                        'oi': f"{oi_pct:+.1f}%{'✓' if oi_grow else '✗'}",
+                        'fr': f"{t.funding_rate:+.3f}%{'✓' if funding_ok else '✗'}",
+                        'b': f"{pct_b:.2f}{'✓' if pct_b_ok else '✗'}",
+                    }
+                    return (t, score, details)
+                return None
+            except Exception:
+                return None
+
+        sem_r = asyncio.Semaphore(15)
+        async def bounded_r(t):
+            async with sem_r:
+                return await check_resonance(t)
+        r_results = await asyncio.gather(*[bounded_r(t) for t in resonance_candidates])
+        resonance_alerts = [r for r in r_results if r is not None]
+
         # 模式7: 早期量能异动 — 需要单独拉K线检查
         # 筛选：涨幅-2%到+8%(微涨或刚启动) + 量>$10M，然后拉1h K线检查当前量能vs20h均量
         early_vol_candidates = [t for t in candidates
@@ -407,8 +489,25 @@ async def cmd_scan(args):
         else:
             print("  无信号")
 
+        # 模式8: 15分钟共振做多
+        print()
+        print("=" * 70)
+        print("🎯 15分钟共振做多（MA+量+OI+费率+Boll至少4项）")
+        print("=" * 70)
+        if resonance_alerts:
+            resonance_alerts.sort(key=lambda x: x[1], reverse=True)  # 按score排序
+            for t, score, d in resonance_alerts[:args.limit]:
+                print(
+                    f"  {t.symbol:<16} {score}/5  "
+                    f"价:{d['price']:.6g}  "
+                    f"MA:{d['ma']}  Vol:{d['vol']}  OI:{d['oi']}  FR:{d['fr']}  %B:{d['b']}"
+                )
+        else:
+            print("  无信号")
+
         total = (len(early_pumps) + len(top_reversals) + len(oversold) + len(neg_funding)
-                 + len(breakouts) + len(vol_anomalies) + len(early_vol_alerts))
+                 + len(breakouts) + len(vol_anomalies) + len(early_vol_alerts)
+                 + len(resonance_alerts))
         print(f"\n共扫描 {len(candidates)} 币种，发现 {total} 个信号")
     finally:
         await client.close()
