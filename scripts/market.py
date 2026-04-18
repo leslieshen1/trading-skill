@@ -279,6 +279,87 @@ async def cmd_scan(args):
         r_results = await asyncio.gather(*[bounded_r(t) for t in resonance_candidates])
         resonance_alerts = [r for r in r_results if r is not None]
 
+        # 模式9: 顶部反转做空（庄撤离 / MM出货）
+        # 目标：捕捉已涨过的币进入下行通道的早期信号
+        # 筛选：24h涨幅 > 10% 且 quote_volume > $10M（有过拉盘+流动性）
+        short_candidates = [t for t in candidates
+                            if 10 < t.change_24h < 200
+                            and t.quote_volume_24h > 10_000_000]
+        short_alerts = []  # (ticker, score, details)
+
+        async def check_short(t):
+            try:
+                bars_task = client.get_klines(t.symbol, interval="1h", limit=30)
+                async with httpx.AsyncClient(timeout=10.0, base_url="https://fapi.binance.com") as h:
+                    oi_task = h.get("/futures/data/openInterestHist",
+                                    params={"symbol": t.symbol, "period": "5m", "limit": 7})
+                    bars, oi_resp = await asyncio.gather(bars_task, oi_task)
+
+                if not bars or len(bars) < 25:
+                    return None
+                closes = [b.close for b in bars]
+                highs = [b.high for b in bars]
+                vols = [b.volume for b in bars]
+                current_close = closes[-1]
+                recent_high = max(highs[-20:])
+
+                # EMA20
+                def ema(data, period):
+                    k = 2 / (period + 1)
+                    e = data[0]
+                    for p in data[1:]:
+                        e = p * k + e * (1 - k)
+                    return e
+                ema20 = ema(closes[-25:], 20)
+
+                # 条件1: 已从近期高点回落 > 3%
+                off_high_pct = (1 - current_close / recent_high) * 100
+                off_high = off_high_pct > 3
+
+                # 条件2: 价格跌破EMA20 (或接近)
+                below_ema20 = current_close < ema20 * 1.005  # 允许0.5%误差
+
+                # 条件3: OI 过去30分钟下降 > 2% (持仓减少=多头平仓)
+                oi_data = oi_resp.json() if oi_resp.status_code == 200 else []
+                oi_pct = 0
+                if len(oi_data) >= 7:
+                    oi_now = float(oi_data[-1]["sumOpenInterest"])
+                    oi_30min_ago = float(oi_data[0]["sumOpenInterest"])
+                    if oi_30min_ago > 0:
+                        oi_pct = (oi_now / oi_30min_ago - 1) * 100
+                oi_drop = oi_pct < -2
+
+                # 条件4: 量能萎缩（过去3根均量 < 前20根均量）
+                recent_vol_avg = sum(vols[-3:]) / 3
+                past_vol_avg = sum(vols[-23:-3]) / 20
+                vol_shrink = recent_vol_avg < past_vol_avg * 0.9 if past_vol_avg > 0 else False
+
+                # 条件5: 费率不极端（-0.5% 到 +0.2%）
+                funding_ok = -0.5 < t.funding_rate < 0.2
+
+                score = sum([off_high, below_ema20, oi_drop, vol_shrink, funding_ok])
+                if score >= 4:
+                    details = {
+                        'price': current_close,
+                        'high': recent_high,
+                        'off_high': f"-{off_high_pct:.1f}%{'✓' if off_high else '✗'}",
+                        'ema': f"{'破' if below_ema20 else '上'}{'✓' if below_ema20 else '✗'}",
+                        'oi': f"{oi_pct:+.1f}%{'✓' if oi_drop else '✗'}",
+                        'vol': f"{recent_vol_avg/past_vol_avg:.1f}x{'✓' if vol_shrink else '✗'}" if past_vol_avg > 0 else "?",
+                        'fr': f"{t.funding_rate:+.3f}%{'✓' if funding_ok else '✗'}",
+                    }
+                    return (t, score, details)
+                return None
+            except Exception:
+                return None
+
+        sem_s = asyncio.Semaphore(15)
+        async def bounded_s(t):
+            async with sem_s:
+                return await check_short(t)
+        s_results = await asyncio.gather(*[bounded_s(t) for t in short_candidates])
+        short_alerts = [r for r in s_results if r is not None]
+
         # 模式7: 早期量能异动 — 需要单独拉K线检查
         # 筛选：涨幅-2%到+8%(微涨或刚启动) + 量>$10M，然后拉1h K线检查当前量能vs20h均量
         early_vol_candidates = [t for t in candidates
@@ -505,9 +586,25 @@ async def cmd_scan(args):
         else:
             print("  无信号")
 
+        # 模式9: 顶部反转做空
+        print()
+        print("=" * 70)
+        print("🔻🔻 顶部反转做空（庄撤离）— 已涨过+跌破EMA20+OI下降+量缩")
+        print("=" * 70)
+        if short_alerts:
+            short_alerts.sort(key=lambda x: x[1], reverse=True)
+            for t, score, d in short_alerts[:args.limit]:
+                print(
+                    f"  {t.symbol:<16} {score}/5  "
+                    f"价:{d['price']:.6g}  高:{d['high']:.6g}  "
+                    f"{d['off_high']}  EMA:{d['ema']}  OI:{d['oi']}  Vol:{d['vol']}  FR:{d['fr']}"
+                )
+        else:
+            print("  无信号")
+
         total = (len(early_pumps) + len(top_reversals) + len(oversold) + len(neg_funding)
                  + len(breakouts) + len(vol_anomalies) + len(early_vol_alerts)
-                 + len(resonance_alerts))
+                 + len(resonance_alerts) + len(short_alerts))
         print(f"\n共扫描 {len(candidates)} 币种，发现 {total} 个信号")
     finally:
         await client.close()
